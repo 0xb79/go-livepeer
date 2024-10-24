@@ -20,6 +20,7 @@ import (
 	"github.com/livepeer/go-livepeer/core"
 	"github.com/livepeer/go-livepeer/eth"
 	"github.com/livepeer/go-livepeer/eth/types"
+	"github.com/livepeer/go-livepeer/monitor"
 	"github.com/livepeer/go-livepeer/pm"
 	"github.com/livepeer/lpms/ffmpeg"
 	"github.com/pkg/errors"
@@ -27,6 +28,12 @@ import (
 
 const MainnetChainId = 1
 const RinkebyChainId = 4
+
+func (s *LivepeerServer) healthzHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		respondOk(w, nil)
+	})
+}
 
 // Status
 func (s *LivepeerServer) statusHandler() http.Handler {
@@ -125,6 +132,7 @@ func setBroadcastConfigHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pricePerUnit := r.FormValue("maxPricePerUnit")
 		pixelsPerUnit := r.FormValue("pixelsPerUnit")
+		currency := r.FormValue("currency")
 		transcodingOptions := r.FormValue("transcodingOptions")
 
 		if (pricePerUnit == "" || pixelsPerUnit == "") && transcodingOptions == "" {
@@ -134,28 +142,38 @@ func setBroadcastConfigHandler() http.Handler {
 
 		// set max price
 		if pricePerUnit != "" && pixelsPerUnit != "" {
-			pr, err := strconv.ParseInt(pricePerUnit, 10, 64)
-			if err != nil {
-				respond400(w, errors.Wrapf(err, "Error converting string to int64").Error())
+			pr, ok := new(big.Rat).SetString(pricePerUnit)
+			if !ok {
+				respond400(w, fmt.Sprintf("Error parsing pricePerUnit value: %s", pricePerUnit))
 				return
 			}
-			px, err := strconv.ParseInt(pixelsPerUnit, 10, 64)
-			if err != nil {
-				respond400(w, errors.Wrapf(err, "Error converting string to int64").Error())
+			px, ok := new(big.Rat).SetString(pixelsPerUnit)
+			if !ok {
+				respond400(w, fmt.Sprintf("Error parsing pixelsPerUnit value: %s", pixelsPerUnit))
 				return
 			}
-			if px <= 0 {
-				respond400(w, fmt.Sprintf("pixels per unit must be greater than 0, provided %d", px))
+			if px.Sign() <= 0 {
+				respond400(w, fmt.Sprintf("pixels per unit must be greater than 0, provided %v", pixelsPerUnit))
 				return
+			}
+			pricePerPixel := new(big.Rat).Quo(pr, px)
+
+			var autoPrice *core.AutoConvertedPrice
+			if pricePerPixel.Sign() > 0 {
+				var err error
+				autoPrice, err = core.NewAutoConvertedPrice(currency, pricePerPixel, func(price *big.Rat) {
+					if monitor.Enabled {
+						monitor.MaxTranscodingPrice(price)
+					}
+					glog.Infof("Maximum transcoding price: %v wei per pixel\n", price.FloatString(3))
+				})
+				if err != nil {
+					respond400(w, errors.Wrap(err, "error converting price").Error())
+					return
+				}
 			}
 
-			var price *big.Rat
-			if pr > 0 {
-				price = big.NewRat(pr, px)
-			}
-
-			BroadcastCfg.SetMaxPrice(price)
-			glog.Infof("Maximum transcoding price: %d per %q pixels\n", pr, px)
+			BroadcastCfg.SetMaxPrice(autoPrice)
 		}
 
 		// set broadcast profiles
@@ -291,7 +309,8 @@ func (s *LivepeerServer) activateOrchestratorHandler(client eth.LivepeerEthClien
 			return
 		}
 
-		if err := s.setOrchestratorPriceInfo("default", r.FormValue("pricePerUnit"), r.FormValue("pixelsPerUnit")); err != nil {
+		pricePerUnit, pixelsPerUnit, currency := r.FormValue("pricePerUnit"), r.FormValue("pixelsPerUnit"), r.FormValue("currency")
+		if err := s.setOrchestratorPriceInfo("default", pricePerUnit, pixelsPerUnit, currency); err != nil {
 			respond400(w, err.Error())
 			return
 		}
@@ -385,8 +404,9 @@ func (s *LivepeerServer) setOrchestratorConfigHandler(client eth.LivepeerEthClie
 	return mustHaveClient(client, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pixels := r.FormValue("pixelsPerUnit")
 		price := r.FormValue("pricePerUnit")
+		currency := r.FormValue("currency")
 		if pixels != "" && price != "" {
-			if err := s.setOrchestratorPriceInfo("default", price, pixels); err != nil {
+			if err := s.setOrchestratorPriceInfo("default", price, pixels, currency); err != nil {
 				respond400(w, err.Error())
 				return
 			}
@@ -458,24 +478,8 @@ func (s *LivepeerServer) setOrchestratorConfigHandler(client eth.LivepeerEthClie
 	}))
 }
 
-func (s *LivepeerServer) setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUnitStr, pixelsPerUnitStr string) error {
-	ok, err := regexp.MatchString("^[0-9]+$", pricePerUnitStr)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("pricePerUnit is not a valid integer, provided %v", pricePerUnitStr)
-	}
-
-	ok, err = regexp.MatchString("^[0-9]+$", pixelsPerUnitStr)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("pixelsPerUnit is not a valid integer, provided %v", pixelsPerUnitStr)
-	}
-
-	ok, err = regexp.MatchString("^0x[0-9a-fA-F]{40}|default$", broadcasterEthAddr)
+func (s *LivepeerServer) setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUnitStr, pixelsPerUnitStr, currency string) error {
+	ok, err := regexp.MatchString("^0x[0-9a-fA-F]{40}|default$", broadcasterEthAddr)
 	if err != nil {
 		return err
 	}
@@ -483,28 +487,34 @@ func (s *LivepeerServer) setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUn
 		return fmt.Errorf("broadcasterEthAddr is not a valid eth address, provided %v", broadcasterEthAddr)
 	}
 
-	pricePerUnit, err := strconv.ParseInt(pricePerUnitStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("error converting pricePerUnit string to int64: %v", err)
+	pricePerUnit, ok := new(big.Rat).SetString(pricePerUnitStr)
+	if !ok {
+		return fmt.Errorf("error parsing pricePerUnit value: %s", pricePerUnitStr)
 	}
-	if pricePerUnit < 0 {
-		return fmt.Errorf("price unit must be greater than or equal to 0, provided %d", pricePerUnit)
-	}
-
-	pixelsPerUnit, err := strconv.ParseInt(pixelsPerUnitStr, 10, 64)
-	if err != nil {
-		return fmt.Errorf("error converting pixelsPerUnit string to int64: %v", err)
-	}
-	if pixelsPerUnit <= 0 {
-		return fmt.Errorf("pixels per unit must be greater than 0, provided %d", pixelsPerUnit)
+	if pricePerUnit.Sign() < 0 {
+		return fmt.Errorf("price unit must be greater than or equal to 0, provided %s", pricePerUnitStr)
 	}
 
-	s.LivepeerNode.SetBasePrice(broadcasterEthAddr, big.NewRat(pricePerUnit, pixelsPerUnit))
-	if broadcasterEthAddr == "default" {
-		glog.Infof("Price per pixel set to %d wei for %d pixels\n", pricePerUnit, pixelsPerUnit)
-	} else {
-		glog.Infof("Price per pixel set to %d wei for %d pixels for broadcaster %s\n", pricePerUnit, pixelsPerUnit, broadcasterEthAddr)
+	pixelsPerUnit, ok := new(big.Rat).SetString(pixelsPerUnitStr)
+	if !ok {
+		return fmt.Errorf("error parsing pixelsPerUnit value: %v", pixelsPerUnitStr)
 	}
+	if pixelsPerUnit.Sign() <= 0 {
+		return fmt.Errorf("pixels per unit must be greater than 0, provided %s", pixelsPerUnitStr)
+	}
+
+	pricePerPixel := new(big.Rat).Quo(pricePerUnit, pixelsPerUnit)
+	autoPrice, err := core.NewAutoConvertedPrice(currency, pricePerPixel, func(price *big.Rat) {
+		if broadcasterEthAddr == "default" {
+			glog.Infof("Price: %v wei per pixel\n ", price.FloatString(3))
+		} else {
+			glog.Infof("Price: %v wei per pixel for broadcaster %v", price.FloatString(3), broadcasterEthAddr)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("error converting price: %v", err)
+	}
+	s.LivepeerNode.SetBasePrice(broadcasterEthAddr, autoPrice)
 
 	return nil
 }
@@ -512,6 +522,12 @@ func (s *LivepeerServer) setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUn
 func (s *LivepeerServer) setServiceURI(client eth.LivepeerEthClient, serviceURI string) error {
 	parsedURI, err := url.Parse(serviceURI)
 	if err != nil {
+		glog.Error(err)
+		return err
+	}
+
+	if !common.ValidateServiceURI(parsedURI) {
+		err = errors.New("service address must be a public IP address or hostname")
 		glog.Error(err)
 		return err
 	}
@@ -564,9 +580,10 @@ func (s *LivepeerServer) setPriceForBroadcaster() http.Handler {
 		if s.LivepeerNode.NodeType == core.OrchestratorNode {
 			pricePerUnitStr := r.FormValue("pricePerUnit")
 			pixelsPerUnitStr := r.FormValue("pixelsPerUnit")
+			currency := r.FormValue("currency")
 			broadcasterEthAddr := r.FormValue("broadcasterEthAddr")
 
-			err := s.setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUnitStr, pixelsPerUnitStr)
+			err := s.setOrchestratorPriceInfo(broadcasterEthAddr, pricePerUnitStr, pixelsPerUnitStr, currency)
 			if err == nil {
 				respondOk(w, []byte(fmt.Sprintf("Price per pixel set to %s wei for %s pixels for broadcaster %s\n", pricePerUnitStr, pixelsPerUnitStr, broadcasterEthAddr)))
 			} else {
@@ -1471,7 +1488,7 @@ func respond400(w http.ResponseWriter, errMsg string) {
 }
 
 func respondWithError(w http.ResponseWriter, errMsg string, code int) {
-	glog.Errorf("HTTP Response Error %v: %v", code, errMsg)
+	glog.Errorf("HTTP Response Error statusCode=%d err=%v", code, errMsg)
 	http.Error(w, errMsg, code)
 }
 

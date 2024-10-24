@@ -112,6 +112,7 @@ type (
 		kClientIP                     tag.Key
 		kOrchestratorURI              tag.Key
 		kOrchestratorAddress          tag.Key
+		kOrchestratorVersion          tag.Key
 		kFVErrorType                  tag.Key
 		mSegmentSourceAppeared        *stats.Int64Measure
 		mSegmentEmerged               *stats.Int64Measure
@@ -252,6 +253,7 @@ func InitCensus(nodeType NodeType, version string) {
 	census.kClientIP = tag.MustNewKey("client_ip")
 	census.kOrchestratorURI = tag.MustNewKey("orchestrator_uri")
 	census.kOrchestratorAddress = tag.MustNewKey("orchestrator_address")
+	census.kOrchestratorVersion = tag.MustNewKey("orchestrator_version")
 	census.kFVErrorType = tag.MustNewKey("fverror_type")
 	census.kSegClassName = tag.MustNewKey("seg_class_name")
 	census.ctx, err = tag.New(ctx, tag.Insert(census.kNodeType, string(nodeType)), tag.Insert(census.kNodeID, NodeID))
@@ -306,8 +308,8 @@ func InitCensus(nodeType NodeType, version string) {
 	census.mTicketValueSent = stats.Float64("ticket_value_sent", "TicketValueSent", "gwei")
 	census.mTicketsSent = stats.Int64("tickets_sent", "TicketsSent", "tot")
 	census.mPaymentCreateError = stats.Int64("payment_create_errors", "PaymentCreateError", "tot")
-	census.mDeposit = stats.Float64("broadcaster_deposit", "Current remaining deposit for the broadcaster node", "gwei")
-	census.mReserve = stats.Float64("broadcaster_reserve", "Current remaining reserve for the broadcaster node", "gwei")
+	census.mDeposit = stats.Float64("gateway_deposit", "Current remaining deposit for the gateway node", "gwei")
+	census.mReserve = stats.Float64("gateway_reserve", "Current remaining reserve for the gateway node", "gwei")
 
 	// Metrics for receiving payments
 	census.mTicketValueRecv = stats.Float64("ticket_value_recv", "TicketValueRecv", "gwei")
@@ -369,8 +371,8 @@ func InitCensus(nodeType NodeType, version string) {
 		baseTagsWithManifestIDAndIP = append([]tag.Key{census.kClientIP}, baseTagsWithManifestID...)
 	}
 	baseTagsWithManifestIDAndOrchInfo := baseTagsWithManifestID
-	baseTagsWithOrchInfo = append([]tag.Key{census.kOrchestratorURI, census.kOrchestratorAddress}, baseTags...)
-	baseTagsWithManifestIDAndOrchInfo = append([]tag.Key{census.kOrchestratorURI, census.kOrchestratorAddress}, baseTagsWithManifestID...)
+	baseTagsWithOrchInfo = append([]tag.Key{census.kOrchestratorURI, census.kOrchestratorAddress, census.kOrchestratorVersion}, baseTags...)
+	baseTagsWithManifestIDAndOrchInfo = append([]tag.Key{census.kOrchestratorURI, census.kOrchestratorAddress, census.kOrchestratorVersion}, baseTagsWithManifestID...)
 
 	views := []*view.View{
 		{
@@ -691,16 +693,31 @@ func InitCensus(nodeType NodeType, version string) {
 			Aggregation: view.Sum(),
 		},
 		{
+			Name:        "gateway_deposit",
+			Measure:     census.mDeposit,
+			Description: "Current remaining deposit for the gateway node",
+			TagKeys:     baseTagsWithEthAddr,
+			Aggregation: view.LastValue(),
+		},
+		{
+			Name:        "gateway_reserve",
+			Measure:     census.mReserve,
+			Description: "Current remaining reserve for the gateway node",
+			TagKeys:     baseTagsWithEthAddr,
+			Aggregation: view.LastValue(),
+		},
+		// TODO: Keep the old names for backwards compatibility, remove in the future
+		{
 			Name:        "broadcaster_deposit",
 			Measure:     census.mDeposit,
-			Description: "Current remaining deposit for the broadcaster node",
+			Description: "Current remaining deposit for the gateway node",
 			TagKeys:     baseTagsWithEthAddr,
 			Aggregation: view.LastValue(),
 		},
 		{
 			Name:        "broadcaster_reserve",
 			Measure:     census.mReserve,
-			Description: "Current remaining reserve for the broadcaster node",
+			Description: "Current remaining reserve for the gateway node",
 			TagKeys:     baseTagsWithEthAddr,
 			Aggregation: view.LastValue(),
 		},
@@ -899,6 +916,10 @@ func manifestIDTagAndOrchInfo(orchInfo *lpnet.OrchestratorInfo, ctx context.Cont
 		tag.Insert(census.kOrchestratorURI, orchInfo.GetTranscoder()),
 		tag.Insert(census.kOrchestratorAddress, common.BytesToAddress(orchInfo.GetAddress()).String()),
 	)
+	capabilities := orchInfo.GetCapabilities()
+	if capabilities != nil {
+		others = append(others, tag.Insert(census.kOrchestratorVersion, capabilities.Version))
+	}
 
 	return others
 }
@@ -1533,7 +1554,7 @@ func PaymentCreateError(ctx context.Context) {
 	}
 }
 
-// Deposit records the current deposit for the broadcaster
+// Deposit records the current deposit for the gateway
 func Deposit(sender string, deposit *big.Int) {
 	if err := stats.RecordWithTags(census.ctx,
 		[]tag.Mutator{tag.Insert(census.kSender, sender)}, census.mDeposit.M(wei2gwei(deposit))); err != nil {
@@ -1551,14 +1572,12 @@ func Reserve(sender string, reserve *big.Int) {
 }
 
 func MaxTranscodingPrice(maxPrice *big.Rat) {
-	floatWei, ok := maxPrice.Float64()
-	if ok {
-		if err := stats.RecordWithTags(census.ctx,
-			[]tag.Mutator{tag.Insert(census.kSender, "max")},
-			census.mTranscodingPrice.M(floatWei)); err != nil {
+	floatWei, _ := maxPrice.Float64()
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kSender, "max")},
+		census.mTranscodingPrice.M(floatWei)); err != nil {
 
-			glog.Errorf("Error recording metrics err=%q", err)
-		}
+		glog.Errorf("Error recording metrics err=%q", err)
 	}
 }
 
@@ -1672,15 +1691,13 @@ func MaxGasPrice(maxGasPrice *big.Int) {
 
 // TranscodingPrice records the last transcoding price
 func TranscodingPrice(sender string, price *big.Rat) {
-	floatWei, ok := price.Float64()
-	if ok {
-		stats.Record(census.ctx, census.mTranscodingPrice.M(floatWei))
-		if err := stats.RecordWithTags(census.ctx,
-			[]tag.Mutator{tag.Insert(census.kSender, sender)},
-			census.mTranscodingPrice.M(floatWei)); err != nil {
+	floatWei, _ := price.Float64()
+	stats.Record(census.ctx, census.mTranscodingPrice.M(floatWei))
+	if err := stats.RecordWithTags(census.ctx,
+		[]tag.Mutator{tag.Insert(census.kSender, sender)},
+		census.mTranscodingPrice.M(floatWei)); err != nil {
 
-			glog.Errorf("Error recording metrics err=%q", err)
-		}
+		glog.Errorf("Error recording metrics err=%q", err)
 	}
 }
 

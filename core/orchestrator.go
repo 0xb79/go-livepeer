@@ -578,6 +578,17 @@ func (n *LivepeerNode) transcodeSeg(ctx context.Context, config transcodeConfig,
 	}
 	md.Fname = url
 
+	orchId := "offchain"
+	if n.RecipientAddr != "" {
+		orchId = n.RecipientAddr
+	}
+	if isRemote {
+		// huge hack to thread the orch id down to the transcoder
+		md.Metadata = map[string]string{"orchId": orchId}
+	} else {
+		md.Metadata = MakeMetadata(orchId)
+	}
+
 	//Do the transcoding
 	start := time.Now()
 	tData, err := transcoder.Transcode(ctx, md)
@@ -812,6 +823,7 @@ func (rt *RemoteTranscoder) Transcode(logCtx context.Context, md *SegTranscoding
 	msg := &net.NotifySegment{
 		Url:     fname,
 		TaskId:  taskID,
+		OrchId:  md.Metadata["orchId"],
 		SegData: segData,
 		// Triggers failure on Os that don't know how to use SegData
 		Profiles: []byte("invalid"),
@@ -977,7 +989,9 @@ func (rtm *RemoteTranscoderManager) selectTranscoder(sessionId string, caps *Cap
 	findCompatibleTranscoder := func(rtm *RemoteTranscoderManager) int {
 		for i := len(rtm.remoteTranscoders) - 1; i >= 0; i-- {
 			// no capabilities = default capabilities, all transcoders must support them
-			if caps == nil || caps.bitstring.CompatibleWith(rtm.remoteTranscoders[i].capabilities.bitstring) {
+			if caps == nil ||
+				(caps.bitstring.CompatibleWith(rtm.remoteTranscoders[i].capabilities.bitstring) &&
+					caps.LivepeerVersionCompatibleWith(rtm.remoteTranscoders[i].capabilities.ToNetCapabilities())) {
 				return i
 			}
 		}
@@ -1029,7 +1043,7 @@ func (node *RemoteTranscoderManager) EndTranscodingSession(sessionId string) {
 	panic("shouldn't be called on RemoteTranscoderManager")
 }
 
-// completeStreamSessions end a stream session for a remote transcoder and decrements its load
+// completeStreamSession end a stream session for a remote transcoder and decrements its load
 // caller should hold the mutex lock
 func (rtm *RemoteTranscoderManager) completeStreamSession(sessionId string) {
 	t, ok := rtm.streamSessions[sessionId]

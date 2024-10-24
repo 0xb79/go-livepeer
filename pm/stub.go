@@ -466,7 +466,7 @@ func (m *MockRecipient) RedeemWinningTicket(ticket *Ticket, sig []byte, seed *bi
 }
 
 // TicketParams returns the recipient's currently accepted ticket parameters
-// for a provided sender ETH adddress
+// for a provided sender ETH address
 func (m *MockRecipient) TicketParams(sender ethcommon.Address, price *big.Rat) (*TicketParams, error) {
 	args := m.Called(sender, price)
 
@@ -509,6 +509,11 @@ type MockSender struct {
 func (m *MockSender) StartSession(ticketParams TicketParams) string {
 	args := m.Called(ticketParams)
 	return args.String(0)
+}
+
+// CleanupSession deletes session from the internal ma
+func (m *MockSender) CleanupSession(sessionID string) {
+	m.Called(sessionID)
 }
 
 // EV returns the ticket EV for a session

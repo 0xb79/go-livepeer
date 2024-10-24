@@ -22,6 +22,9 @@ type Sender interface {
 	// for creating new tickets
 	StartSession(ticketParams TicketParams) string
 
+	// CleanupSession deletes session from the internal map
+	CleanupSession(sessionID string)
+
 	// CreateTicketBatch returns a ticket batch of the specified size
 	CreateTicketBatch(sessionID string, size int) (*TicketBatch, error)
 
@@ -82,6 +85,10 @@ func (s *sender) EV(sessionID string) (*big.Rat, error) {
 	return ticketEV(session.ticketParams.FaceValue, session.ticketParams.WinProb), nil
 }
 
+func (s *sender) CleanupSession(sessionID string) {
+	s.sessions.Delete(sessionID)
+}
+
 func (s *sender) validateSender(info *SenderInfo) error {
 	maxWithdrawRound := new(big.Int).Add(s.timeManager.LastInitializedRound(), big.NewInt(1))
 	if info.WithdrawRound.Int64() != 0 && info.WithdrawRound.Cmp(maxWithdrawRound) != 1 {
@@ -113,7 +120,7 @@ func (s *sender) CreateTicketBatch(sessionID string, size int) (*TicketBatch, er
 	ticketParams := &session.ticketParams
 
 	expirationParams := ticketParams.ExpirationParams
-	// Ensure backwards compatbility
+	// Ensure backwards compatibility
 	// If no expirationParams are included by O
 	// B sets the values based upon its last seen round
 	if expirationParams == nil || expirationParams.CreationRound == 0 || expirationParams.CreationRoundBlockHash == (ethcommon.Hash{}) {

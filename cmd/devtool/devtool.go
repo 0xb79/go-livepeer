@@ -3,14 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/golang/glog"
-	"github.com/livepeer/go-livepeer/cmd/devtool/devtool"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/golang/glog"
+	"github.com/livepeer/go-livepeer/cmd/devtool/devtool"
 )
 
 var (
@@ -61,7 +62,7 @@ func main() {
 	if !goodToGo {
 		fmt.Println(`
     Usage: go run cmd/devtool/devtool.go setup broadcaster|transcoder [nodeIndex]
-        It will create initilize eth account (on private testnet) to be used for broadcaster or transcoder
+        It will create initialize eth account (on private testnet) to be used for broadcaster or transcoder
         and will create shell script (run_broadcaster_ETHACC.sh or run_transcoder_ETHACC.sh) to run it.
         Node index indicates how much to offset node's port. Orchestrator node's index by default is 1.
         For example:
@@ -195,7 +196,7 @@ func createRunScript(ethController string, dataDir, serviceHost string, cfg devt
 	} else {
 		args = append(
 			args,
-			"-broadcaster=true",
+			"-gateway=true",
 			fmt.Sprintf("-rtmpAddr %s:%d", serviceHost, rtmpPort),
 		)
 
