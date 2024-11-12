@@ -869,6 +869,7 @@ func TestGetOrchestrator_GivenValidSig_ReturnsTranscoderURI(t *testing.T) {
 	orch.On("TicketParams", mock.Anything, mock.Anything).Return(nil, nil)
 	orch.On("PriceInfo", mock.Anything).Return(nil, nil)
 	orch.On("AuthToken", mock.Anything, mock.Anything).Return(&net.AuthToken{})
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	oInfo, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert := assert.New(t)
@@ -899,6 +900,7 @@ func TestGetOrchestrator_GivenValidSig_ReturnsOrchTicketParams(t *testing.T) {
 	orch.On("TicketParams", mock.Anything, mock.Anything).Return(expectedParams, nil)
 	orch.On("PriceInfo", mock.Anything, mock.Anything).Return(nil, nil)
 	orch.On("AuthToken", mock.Anything, mock.Anything).Return(&net.AuthToken{})
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	oInfo, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert := assert.New(t)
@@ -972,6 +974,7 @@ func TestGetOrchestratorWebhookAuth_ReturnsOK(t *testing.T) {
 	orch.On("TicketParams", mock.Anything, mock.Anything).Return(expectedParams, nil)
 	orch.On("PriceInfo", mock.Anything, mock.Anything).Return(nil, nil)
 	orch.On("AuthToken", mock.Anything, mock.Anything).Return(&net.AuthToken{})
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	oInfo, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert := assert.New(t)
@@ -989,7 +992,7 @@ func TestGetOrchestrator_TicketParamsError(t *testing.T) {
 	expErr := errors.New("TicketParams error")
 	orch.On("PriceInfo", mock.Anything).Return(nil, nil)
 	orch.On("TicketParams", mock.Anything, mock.Anything).Return(nil, expErr)
-
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	_, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert := assert.New(t)
@@ -1010,6 +1013,7 @@ func TestGetOrchestrator_GivenValidSig_ReturnsOrchPriceInfo(t *testing.T) {
 	orch.On("TicketParams", mock.Anything, mock.Anything).Return(nil, nil)
 	orch.On("PriceInfo", mock.Anything).Return(expectedPrice, nil)
 	orch.On("AuthToken", mock.Anything, mock.Anything).Return(&net.AuthToken{})
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	oInfo, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert := assert.New(t)
@@ -1027,7 +1031,7 @@ func TestGetOrchestrator_PriceInfoError(t *testing.T) {
 	orch.On("ServiceURI").Return(url.Parse(uri))
 	orch.On("Address").Return(ethcommon.Address{})
 	orch.On("PriceInfo", mock.Anything).Return(nil, expErr)
-
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 	_, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
 	assert.EqualError(t, err, expErr.Error())
@@ -1052,6 +1056,7 @@ func TestGetOrchestrator_GivenValidSig_ReturnsAuthToken(t *testing.T) {
 	// when the mocked AuthToken is called. 1 second would need to elapse which should only really happen if the test
 	// is run in a really slow environment
 	orch.On("AuthToken", authToken.SessionId, authToken.Expiration).Return(authToken)
+	orch.On("GetCapabilitiesPrices", mock.Anything).Return([]*net.PriceInfo{}, nil)
 
 	oInfo, err := getOrchestrator(orch, &net.OrchestratorRequest{})
 
