@@ -12,7 +12,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,7 +36,7 @@ const defaultAudioToTextModelID = "openai/whisper-large-v3"
 const defaultLLMModelID = "meta-llama/llama-3.1-8B-Instruct"
 const defaultSegmentAnything2ModelID = "facebook/sam2-hiera-large"
 const defaultImageToTextModelID = "Salesforce/blip-image-captioning-large"
-const defaultLiveVideoToVideoModelID = "cumulo-autumn/stream-diffusion"
+const defaultLiveVideoToVideoModelID = "noop"
 const defaultTextToSpeechModelID = "parler-tts/parler-tts-large-v1"
 
 var errWrongFormat = fmt.Errorf("result not in correct format")
@@ -86,8 +85,14 @@ type aiRequestParams struct {
 	os          drivers.OSSession
 	sessManager *AISessionManager
 
-	// For live video pipelines
+	liveParams liveRequestParams
+}
+
+// For live video pipelines
+type liveRequestParams struct {
 	segmentReader *media.SwitchableSegmentReader
+	outputRTMPURL string
+	stream        string
 }
 
 // CalculateTextToImageLatencyScore computes the time taken per pixel for an text-to-image request.
@@ -1007,39 +1012,30 @@ func submitLiveVideoToVideo(ctx context.Context, params aiRequestParams, sess *A
 		}
 		return nil, err
 	}
+
+	// Send request to orchestrator
 	resp, err := client.GenLiveVideoToVideoWithResponse(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+
 	if resp.JSON200 != nil {
-		// append orch hostname to the given url if necessary
-		appendHostname := func(urlPath string) (*url.URL, error) {
-			if urlPath == "" {
-				return nil, fmt.Errorf("invalid url from orch")
-			}
-			pu, err := url.Parse(urlPath)
-			if err != nil {
-				return nil, err
-			}
-			if pu.Hostname() != "" {
-				// url has a hostname already so use it
-				return pu, nil
-			}
-			// no hostname, so append one
-			u := sess.Transcoder() + urlPath
-			return url.Parse(u)
-		}
-		pub, err := appendHostname(resp.JSON200.PublishUrl)
+		host := sess.Transcoder()
+		pub, err := common.AppendHostname(resp.JSON200.PublishUrl, host)
 		if err != nil {
-			return nil, fmt.Errorf("pub url - %w", err)
+			return nil, fmt.Errorf("invalid publish URL: %w", err)
 		}
-		sub, err := appendHostname(resp.JSON200.SubscribeUrl)
+		sub, err := common.AppendHostname(resp.JSON200.SubscribeUrl, host)
 		if err != nil {
-			return nil, fmt.Errorf("sub url %w", err)
+			return nil, fmt.Errorf("invalid subscribe URL: %w", err)
 		}
-		clog.V(common.VERBOSE).Infof(ctx, "pub %s sub %s", pub, sub)
+		control, err := common.AppendHostname(resp.JSON200.ControlUrl, host)
+		if err != nil {
+			return nil, fmt.Errorf("invalid control URL: %w", err)
+		}
 		startTricklePublish(pub, params)
 		startTrickleSubscribe(sub, params)
+		startControlPublish(control, params)
 	}
 	return resp, nil
 }
@@ -1395,7 +1391,7 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 	case worker.GenLiveVideoToVideoJSONRequestBody:
 		cap = core.Capability_LiveVideoToVideo
 		modelID = defaultLiveVideoToVideoModelID
-		if v.ModelId != nil {
+		if v.ModelId != nil && *v.ModelId != "" {
 			modelID = *v.ModelId
 		}
 		submitFn = func(ctx context.Context, params aiRequestParams, sess *AISession) (interface{}, error) {
@@ -1446,7 +1442,7 @@ func processAIRequest(ctx context.Context, params aiRequestParams, req interface
 		}
 
 		clog.Infof(ctx, "Error submitting request modelID=%v try=%v orch=%v err=%v", modelID, tries, sess.Transcoder(), err)
-		params.sessManager.Remove(ctx, sess)
+		params.sessManager.Remove(ctx, sess) //TODO: Improve session selection logic for live-video-to-video
 
 		if errors.Is(err, common.ErrAudioDurationCalculation) {
 			return nil, &BadRequestError{err}
