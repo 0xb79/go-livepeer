@@ -361,10 +361,6 @@ func TestSelectUpdateOrchs_AddingUpdatingRow_NoError(t *testing.T) {
 	assert.Equal(updatedOrch[0].RemoteInfo, remoteInfoUpdate.RemoteInfo)
 }
 
-func TestUpdateOrch_AddRemoteInfo(t *testing.T) {
-
-}
-
 func TestSelectUpdateOrchs_AddingMultipleRows_NoError(t *testing.T) {
 	dbh, dbraw, err := TempDB(t)
 	defer dbh.Close()
