@@ -173,11 +173,15 @@ func NewAISessionSelector(cap core.Capability, modelID string, node *core.Livepe
 
 	suspender := newSuspender()
 
+	// Create caps for selector to get maxPrice
+	warmCaps := newAICapabilities(cap, modelID, true, node.Capabilities.MinVersionConstraint())
+	coldCaps := newAICapabilities(cap, modelID, false, node.Capabilities.MinVersionConstraint())
+
 	// The latency score in this context is just the latency of the last completed request for a session
 	// The "good enough" latency score is set to 0.0 so the selector will always select unknown sessions first
 	minLS := 0.0
-	warmPool := NewAISessionPool(NewMinLSSelector(stakeRdr, minLS, node.SelectionAlgorithm, node.OrchPerfScore), suspender)
-	coldPool := NewAISessionPool(NewMinLSSelector(stakeRdr, minLS, node.SelectionAlgorithm, node.OrchPerfScore), suspender)
+	warmPool := NewAISessionPool(NewMinLSSelector(stakeRdr, minLS, node.SelectionAlgorithm, node.OrchPerfScore, warmCaps), suspender)
+	coldPool := NewAISessionPool(NewMinLSSelector(stakeRdr, minLS, node.SelectionAlgorithm, node.OrchPerfScore, coldCaps), suspender)
 	sel := &AISessionSelector{
 		warmPool:  warmPool,
 		coldPool:  coldPool,
@@ -194,6 +198,24 @@ func NewAISessionSelector(cap core.Capability, modelID string, node *core.Livepe
 	}
 
 	return sel, nil
+}
+
+// newAICapabilities creates a new capabilities object with
+func newAICapabilities(cap core.Capability, modelID string, warm bool, minVersion string) *core.Capabilities {
+	aiCaps := []core.Capability{cap}
+	capabilityConstraints := core.PerCapabilityConstraints{
+		cap: &core.CapabilityConstraints{
+			Models: map[string]*core.ModelConstraint{
+				modelID: {Warm: warm},
+			},
+		},
+	}
+
+	caps := core.NewCapabilities(aiCaps, nil)
+	caps.SetPerCapabilityConstraints(capabilityConstraints)
+	caps.SetMinVersionConstraint(minVersion)
+
+	return caps
 }
 
 func (sel *AISessionSelector) Select(ctx context.Context) *AISession {
@@ -314,7 +336,8 @@ func (sel *AISessionSelector) getSessions(ctx context.Context) ([]*BroadcastSess
 		Capabilities: caps,
 		OS:           sel.os,
 	}
-	return selectOrchestrator(ctx, sel.node, streamParams, numOrchs, sel.suspender, common.ScoreAtLeast(0))
+	// TODO: Implement cleanup for AI sessions.
+	return selectOrchestrator(ctx, sel.node, streamParams, numOrchs, sel.suspender, common.ScoreAtLeast(0), func(sessionID string) {})
 }
 
 type AISessionManager struct {
@@ -344,15 +367,8 @@ func (c *AISessionManager) Select(ctx context.Context, cap core.Capability, mode
 		return nil, nil
 	}
 
-	shouldRefresh, err := shouldRefreshSession(ctx, sess.BroadcastSession)
-	if err != nil {
+	if err := refreshSessionIfNeeded(ctx, sess.BroadcastSession); err != nil {
 		return nil, err
-	}
-
-	if shouldRefresh {
-		if err := refreshSession(ctx, sess.BroadcastSession); err != nil {
-			return nil, err
-		}
 	}
 
 	return sess, nil
