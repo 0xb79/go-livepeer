@@ -62,9 +62,12 @@ const StreamKeyBytes = 6
 const SegLen = 2 * time.Second
 const BroadcastRetry = 15 * time.Second
 
+const AISessionManagerTTL = 10 * time.Minute
+
 var BroadcastJobVideoProfiles = []ffmpeg.VideoProfile{ffmpeg.P240p30fps4x3, ffmpeg.P360p30fps16x9}
 
 var AuthWebhookURL *url.URL
+var LiveAIAuthWebhookURL *url.URL
 
 func PixelFormatNone() ffmpeg.PixelFormat {
 	return ffmpeg.PixelFormat{RawValue: ffmpeg.PixelFormatNone}
@@ -111,6 +114,8 @@ type LivepeerServer struct {
 	ExposeCurrentManifest   bool
 	recordingsAuthResponses *cache.Cache
 
+	AISessionManager *AISessionManager
+
 	// Thread sensitive fields. All accesses to the
 	// following fields should be protected by `connectionLock`
 	rtmpConnections   map[core.ManifestID]*rtmpConnection
@@ -120,6 +125,10 @@ type LivepeerServer struct {
 	context           context.Context
 	connectionLock    *sync.RWMutex
 	serverLock        *sync.RWMutex
+
+	mediaMTXApiPassword string
+	liveAIAuthApiKey    string
+	livePaymentInterval time.Duration
 }
 
 func (s *LivepeerServer) SetContextFromUnitTest(c context.Context) {
@@ -184,9 +193,15 @@ func NewLivepeerServer(rtmpAddr string, lpNode *core.LivepeerNode, httpIngest bo
 		rtmpConnections:         make(map[core.ManifestID]*rtmpConnection),
 		internalManifests:       make(map[core.ManifestID]core.ManifestID),
 		recordingsAuthResponses: cache.New(time.Hour, 2*time.Hour),
+		AISessionManager:        NewAISessionManager(lpNode, AISessionManagerTTL),
+		mediaMTXApiPassword:     lpNode.MediaMTXApiPassword,
+		liveAIAuthApiKey:        lpNode.LiveAIAuthApiKey,
+		livePaymentInterval:     lpNode.LivePaymentInterval,
 	}
 	if lpNode.NodeType == core.BroadcasterNode && httpIngest {
 		opts.HttpMux.HandleFunc("/live/", ls.HandlePush)
+
+		startAIMediaServer(ls)
 	}
 	opts.HttpMux.HandleFunc("/recordings/", ls.HandleRecordings)
 	return ls, nil
